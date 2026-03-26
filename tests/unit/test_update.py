@@ -163,3 +163,90 @@ def test_clean_unused_deps_verbose_prints_removed_package(capsys):
     # project.s.is_verbose() was called and err.print was invoked through the mock
     project.s.is_verbose.assert_called()
 
+
+# ---------------------------------------------------------------------------
+# _clean_unused_dependencies with upgrade_lock_data (issue #6573)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_unused_deps_keeps_deps_when_no_upgrades():
+    """Transitive dependencies must not be removed when no packages were
+    actually upgraded.
+
+    Regression test for https://github.com/pypa/pipenv/issues/6573
+    When upgrade_lock_data is provided but no version changes occurred,
+    the full_lock_resolution (based on latest versions) may not match
+    the pinned lockfile state, so cleanup should be skipped entirely.
+    """
+    project = _make_project()
+    # google-auth==2.43.0 requires cachetools and rsa, but latest
+    # google-auth (2.49.1) does not.  google-auth was NOT upgraded.
+    lockfile = {
+        "default": {
+            "google-auth": {"version": "==2.43.0"},
+            "cachetools": {"version": "==6.2.2"},
+            "rsa": {"version": "==4.9.1"},
+        }
+    }
+    original_lockfile = {
+        "default": {
+            "google-auth": {"version": "==2.43.0"},
+            "cachetools": {"version": "==6.2.2"},
+            "rsa": {"version": "==4.9.1"},
+        }
+    }
+    # full_lock_resolution from latest versions does NOT include
+    # cachetools or rsa (latest google-auth dropped them)
+    full_lock_resolution = {
+        "google-auth": {"version": "==2.49.1"},
+    }
+    # Only timeout_decorator was "upgraded" but its version didn't change
+    upgrade_lock_data = {"timeout-decorator": {"version": "==4.4.0"}}
+
+    _clean_unused_dependencies(
+        project, lockfile, "default", full_lock_resolution, original_lockfile,
+        upgrade_lock_data,
+    )
+
+    # All packages should be retained
+    assert "google-auth" in lockfile["default"]
+    assert "cachetools" in lockfile["default"]
+    assert "rsa" in lockfile["default"]
+
+
+def test_clean_unused_deps_removes_when_upgrade_happened():
+    """When packages ARE upgraded, unused dependencies should still be removed.
+
+    Ensures the fix for #6573 doesn't prevent legitimate cleanup.
+    """
+    project = _make_project()
+    # django upgraded from 3.2.10 -> 4.2.7, pytz no longer needed
+    lockfile = {
+        "default": {
+            "django": {"version": "==4.2.7"},
+            "sqlparse": {"version": "==0.4.4"},
+            "pytz": {"version": "==2023.3"},
+        }
+    }
+    original_lockfile = {
+        "default": {
+            "django": {"version": "==3.2.10"},
+            "sqlparse": {"version": "==0.4.4"},
+            "pytz": {"version": "==2023.3"},
+        }
+    }
+    full_lock_resolution = {
+        "django": {"version": "==4.2.7"},
+        "sqlparse": {"version": "==0.4.4"},
+    }
+    # django was upgraded (version changed)
+    upgrade_lock_data = {"django": {"version": "==4.2.7"}}
+
+    _clean_unused_dependencies(
+        project, lockfile, "default", full_lock_resolution, original_lockfile,
+        upgrade_lock_data,
+    )
+
+    assert "pytz" not in lockfile["default"]
+    assert "django" in lockfile["default"]
+    assert "sqlparse" in lockfile["default"]

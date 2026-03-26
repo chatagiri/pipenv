@@ -500,7 +500,12 @@ def _resolve_and_update_lockfile(
 
 
 def _clean_unused_dependencies(
-    project, lockfile, category, full_lock_resolution, original_lockfile
+    project,
+    lockfile,
+    category,
+    full_lock_resolution,
+    original_lockfile,
+    upgrade_lock_data=None,
 ):
     """
     Remove dependencies that are no longer needed after an upgrade.
@@ -511,6 +516,7 @@ def _clean_unused_dependencies(
         category: The category to clean (e.g., 'default', 'develop')
         full_lock_resolution: The complete resolution of dependencies
         original_lockfile: The original lockfile before the upgrade
+        upgrade_lock_data: The packages that were actually upgraded
     """
     if category not in lockfile or category not in original_lockfile:
         return
@@ -529,6 +535,43 @@ def _clean_unused_dependencies(
 
     # Find packages that were in the original lockfile but not in the new resolution
     unused_packages = original_packages - resolved_packages
+
+    # Check if any packages were actually upgraded (version changed).
+    # If nothing was upgraded, the full_lock_resolution (based on latest
+    # versions) may not accurately reflect the dependency tree of the
+    # pinned lockfile versions.  In that case, skip removal to avoid
+    # incorrectly deleting transitive dependencies still needed by
+    # non-upgraded packages.
+    # See: https://github.com/pypa/pipenv/issues/6573
+    # When upgrade_lock_data is provided, check if any packages were actually
+    # upgraded (version changed).  If nothing was upgraded, the
+    # full_lock_resolution (based on latest versions) may not accurately
+    # reflect the dependency tree of the pinned lockfile versions.  In that
+    # case, skip removal to avoid incorrectly deleting transitive dependencies
+    # still needed by non-upgraded packages.
+    # See: https://github.com/pypa/pipenv/issues/6573
+    if upgrade_lock_data is not None:
+        has_upgraded_packages = False
+        for pkg_name in upgrade_lock_data:
+            orig_entry = original_lockfile[category].get(pkg_name, {})
+            curr_entry = lockfile[category].get(pkg_name, {})
+            original_version = (
+                orig_entry.get("version") if isinstance(orig_entry, dict) else None
+            )
+            current_version = (
+                curr_entry.get("version") if isinstance(curr_entry, dict) else None
+            )
+            if original_version != current_version:
+                has_upgraded_packages = True
+                break
+
+        if not has_upgraded_packages:
+            if project.s.is_verbose():
+                err.print(
+                    "Skipping unused dependency cleanup: "
+                    "no packages were actually upgraded"
+                )
+            return
 
     # Remove unused packages from the lockfile
     for package_name in unused_packages:
@@ -663,7 +706,12 @@ def upgrade(
 
             # Clean up unused dependencies
             _clean_unused_dependencies(
-                project, lockfile, category, full_lock_resolution, original_lockfile
+                project,
+                lockfile,
+                category,
+                full_lock_resolution,
+                original_lockfile,
+                upgrade_lock_data,
             )
 
         # Reset package args for next category if needed
